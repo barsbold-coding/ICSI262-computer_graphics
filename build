@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Check if a lab directory is provided
+if [ -z "$1" ]; then
+  echo "Usage: $0 <lab_directory> (e.g., ./build.sh lab3)"
+  exit 1
+fi
+
+LAB_DIR="$1"
+SRC_DIR="$LAB_DIR"
+DIST_DIR="$LAB_DIR/dist"
+OUTPUT="$DIST_DIR/main"
+
+# Check if the lab directory exists
+if [ ! -d "$LAB_DIR" ]; then
+  echo "Error: Directory '$LAB_DIR' does not exist."
+  exit 1
+fi
+
+# Create the dist directory if it doesn't exist
+mkdir -p "$DIST_DIR"
+
+# Compile all .c files in the lab directory
+echo "Compiling sources in '$LAB_DIR'..."
+gcc "$SRC_DIR"/*.c -o "$OUTPUT" -I./include -framework OpenGL -framework GLUT -L./bin
+
+# Check if compilation was successful
+if [ $? -ne 0 ]; then
+  echo "Compilation failed."
+  exit 1
+fi
+
+# Run the compiled binary
+echo "Running '$OUTPUT'..."
+"$OUTPUT"

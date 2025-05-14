@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# Check if a lab directory is provided
+# Check if at least a lab directory is provided
 if [ -z "$1" ]; then
-  echo "Usage: $0 <lab_directory> (e.g., ./build.sh lab3)"
+  echo "Usage: $0 <lab_directory> [--run]"
+  echo "  <lab_directory>: Directory containing the lab code (e.g., lab3)"
+  echo "  --run: Optional flag to run the binary after compilation"
   exit 1
 fi
 
@@ -10,6 +12,12 @@ LAB_DIR="$1"
 SRC_DIR="$LAB_DIR"
 DIST_DIR="$LAB_DIR/dist"
 OUTPUT="$DIST_DIR/main"
+RUN_BINARY=false
+
+# Check for --run flag
+if [ "$2" = "--run" ]; then
+  RUN_BINARY=true
+fi
 
 # Check if the lab directory exists
 if [ ! -d "$LAB_DIR" ]; then
@@ -28,8 +36,12 @@ gcc "$SRC_DIR"/*.c -o "$OUTPUT" -I./include -framework OpenGL -framework GLUT -L
 if [ $? -ne 0 ]; then
   echo "Compilation failed."
   exit 1
+else
+  echo "Compilation successful. Binary created at '$OUTPUT'."
 fi
 
-# Run the compiled binary
-echo "Running '$OUTPUT'..."
-"$OUTPUT"
+# Run the compiled binary if the --run flag is provided
+if [ "$RUN_BINARY" = true ]; then
+  echo "Running '$OUTPUT'..."
+  "$OUTPUT"
+fi

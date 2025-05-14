@@ -1,7 +1,8 @@
 #define GL_SILENCE_DEPRECATION
 #include <GLUT/glut.h>
 #include <stdio.h>
-#include <windows.h>
+#include <stdlib.h>
+#include <string.h>
 
 int num_texture = -1; // Counter to keep track of the last loaded texture
 
@@ -85,85 +86,132 @@ obj_type cube = {
 
 /**********************************************************
  *
- * FUNCTION LoadBitmap(char *)
+ * FUNCTION LoadBMP(char *)
  *
- * This function loads a bitmap file and return the OpenGL reference ID to use
- *that texture
+ * This function loads a BMP file and returns the OpenGL reference ID to use
+ * that texture
  *
  *********************************************************/
 
-int LoadBitmap(char *filename) {
-  int i, j = 0;             // Index variables
-  FILE *l_file;             // File pointer
-  unsigned char *l_texture; // The pointer to the memory zone in which we will
-                            // load the texture
+// BMP file header structure
+typedef struct {
+  unsigned short type; // Magic identifier
+  unsigned int size;   // File size in bytes
+  unsigned short reserved1, reserved2;
+  unsigned int offset; // Offset to image data, bytes
+} BMPFILEHEADER;
 
-  // windows.h gives us these types to work with the Bitmap files
-  BITMAPFILEHEADER fileheader;
-  BITMAPINFOHEADER infoheader;
-  RGBTRIPLE rgb;
+// BMP image header structure
+typedef struct {
+  unsigned int size;            // Header size in bytes
+  int width, height;            // Width and height of image
+  unsigned short planes;        // Number of color planes
+  unsigned short bits;          // Bits per pixel
+  unsigned int compression;     // Compression type
+  unsigned int imagesize;       // Image size in bytes
+  int xresolution, yresolution; // Pixels per meter
+  unsigned int ncolors;         // Number of colors
+  unsigned int importantcolors; // Important colors
+} BMPINFOHEADER;
+
+int LoadBMP(const char *filename) {
+  FILE *file;
+  unsigned char *data;
+  BMPFILEHEADER fileHeader;
+  BMPINFOHEADER infoHeader;
+  unsigned char temp;
+  int i;
 
   num_texture++; // The counter of the current texture is increased
 
-  if ((l_file = fopen(filename, "rb")) == NULL)
-    return (-1); // Open the file for reading
-
-  fread(&fileheader, sizeof(fileheader), 1, l_file); // Read the fileheader
-
-  fseek(l_file, sizeof(fileheader), SEEK_SET);       // Jump the fileheader
-  fread(&infoheader, sizeof(infoheader), 1, l_file); // and read the infoheader
-
-  // Now we need to allocate the memory for our image (width * height * color
-  // deep)
-  l_texture = (byte *)malloc(infoheader.biWidth * infoheader.biHeight * 4);
-  // And fill it with zeros
-  memset(l_texture, 0, infoheader.biWidth * infoheader.biHeight * 4);
-
-  // At this point we can read every pixel of the image
-  for (i = 0; i < infoheader.biWidth * infoheader.biHeight; i++) {
-    // We load an RGB value from the file
-    fread(&rgb, sizeof(rgb), 1, l_file);
-
-    // And store it
-    l_texture[j + 0] = rgb.rgbtRed;   // Red component
-    l_texture[j + 1] = rgb.rgbtGreen; // Green component
-    l_texture[j + 2] = rgb.rgbtBlue;  // Blue component
-    l_texture[j + 3] = 255;           // Alpha value
-    j += 4;                           // Go to the next position
+  // Open the file
+  file = fopen(filename, "rb");
+  if (file == NULL) {
+    printf("Error: File %s not found\n", filename);
+    return -1;
   }
 
-  fclose(l_file); // Closes the file stream
+  // Read the file header
+  fread(&fileHeader.type, 2, 1, file);
+  fread(&fileHeader.size, 4, 1, file);
+  fread(&fileHeader.reserved1, 2, 1, file);
+  fread(&fileHeader.reserved2, 2, 1, file);
+  fread(&fileHeader.offset, 4, 1, file);
 
-  glBindTexture(
-      GL_TEXTURE_2D,
-      num_texture); // Bind the ID texture specified by the 2nd parameter
+  // Read the info header
+  fread(&infoHeader, sizeof(BMPINFOHEADER), 1, file);
 
-  // The next commands sets the texture parameters
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-                  GL_REPEAT); // If the u,v coordinates overflow the range 0,1
-                              // the image is repeated
+  // Check if the file is actually a BMP
+  if (fileHeader.type != 0x4D42) { // 'BM' in little endian
+    fclose(file);
+    printf("Error: %s is not a bitmap file\n", filename);
+    return -1;
+  }
+
+  // Move file pointer to the beginning of bitmap data
+  fseek(file, fileHeader.offset, SEEK_SET);
+
+  // Allocate memory for the image data
+  data = (unsigned char *)malloc(infoHeader.width * infoHeader.height * 4);
+  if (data == NULL) {
+    fclose(file);
+    printf("Error: Memory allocation failed\n");
+    return -1;
+  }
+
+  // Read the image data
+  if (infoHeader.bits == 24) {
+    // Read the RGB values into the data buffer
+    unsigned char *ptr = data;
+    unsigned char rgb[3];
+
+    for (i = 0; i < infoHeader.width * infoHeader.height; i++) {
+      // Read RGB values (BMP stores BGR)
+      fread(rgb, 3, 1, file);
+
+      // Store as RGBA (with Alpha = 255)
+      *ptr++ = rgb[2]; // Red (was Blue)
+      *ptr++ = rgb[1]; // Green
+      *ptr++ = rgb[0]; // Blue (was Red)
+      *ptr++ = 255;    // Alpha
+    }
+  } else {
+    free(data);
+    fclose(file);
+    printf("Error: Only 24-bit BMP files are supported\n");
+    return -1;
+  }
+
+  fclose(file);
+
+  // Bind the texture
+  glBindTexture(GL_TEXTURE_2D, num_texture);
+
+  // Set texture parameters
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                  GL_LINEAR); // The magnification function ("linear" produces
-                              // better results)
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                  GL_LINEAR_MIPMAP_NEAREST); // The minifying function
+                  GL_LINEAR_MIPMAP_NEAREST);
+  glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
-  glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE,
-            GL_REPLACE); // We don't combine the color with the original surface
-                         // color, use only the texture map.
+  // Create the texture
+  glTexImage2D(GL_TEXTURE_2D, 0, 4, infoHeader.width, infoHeader.height, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, data);
 
-  // Finally we define the 2d texture
-  glTexImage2D(GL_TEXTURE_2D, 0, 4, infoheader.biWidth, infoheader.biHeight, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, l_texture);
+  // Create mipmaps
+  gluBuild2DMipmaps(GL_TEXTURE_2D, 4, infoHeader.width, infoHeader.height,
+                    GL_RGBA, GL_UNSIGNED_BYTE, data);
 
-  // And create 2d mipmaps for the minifying function
-  gluBuild2DMipmaps(GL_TEXTURE_2D, 4, infoheader.biWidth, infoheader.biHeight,
-                    GL_RGBA, GL_UNSIGNED_BYTE, l_texture);
+  // Free the memory
+  free(data);
 
-  free(l_texture); // Free the memory we used to load the texture
+  return num_texture;
+}
 
-  return (num_texture); // Returns the current texture OpenGL ID
+void displayAlert(const char *message) {
+  printf("ERROR: %s\n", message);
+  exit(1);
 }
 
 void init(void) {
@@ -187,15 +235,13 @@ void init(void) {
 
   glEnable(GL_TEXTURE_2D); // This Enable the Texture mapping
 
-  cube.id_texture = LoadBitmap("texture1.bmp"); // The Function LoadBitmap()
-                                                // return the current texture ID
+  cube.id_texture = LoadBMP("texture1.bmp"); // The Function LoadBitmap() return
+                                             // the current texture ID
 
   // If the last function returns -1 it means the file was not found so we exit
   // from the program
   if (cube.id_texture == -1) {
-    MessageBox(NULL, "Image file: texture1.bmp not found", "Zetadeck",
-               MB_OK | MB_ICONERROR);
-    exit(0);
+    displayAlert("Image file: texture1.bmp not found");
   }
 }
 
@@ -218,9 +264,7 @@ void resize(int width, int height) {
 }
 
 void keyboard(unsigned char key, int x, int y) {
-
   switch (key) {
-
   case ' ':
     rotation_x_increment = 0;
     rotation_y_increment = 0;
@@ -238,11 +282,15 @@ void keyboard(unsigned char key, int x, int y) {
       filling = 0;
     }
     break;
+  case 'q':
+  case 'Q':
+  case 27: // ESC key
+    exit(0);
+    break;
   }
 }
 
 void keyboard_s(int key, int x, int y) {
-
   switch (key) {
   case GLUT_KEY_UP:
     rotation_x_increment = rotation_x_increment + 0.005;
@@ -343,5 +391,5 @@ int main(int argc, char **argv) {
   init();
   glutMainLoop();
 
-  return (0);
+  return 0;
 }

@@ -1,394 +1,593 @@
+/**
+ * OBJ File Viewer using GLUT for macOS
+ * Handles vertices (v), texture coordinates (vt), normals (vn),
+ * faces (f), smoothing groups (s), and texture mapping
+ */
+
+#ifdef __APPLE__
 #define GL_SILENCE_DEPRECATION
 #include <GLUT/glut.h>
+#include <OpenGL/gl.h>
+#else
+#include <GL/gl.h>
+#include <GL/glut.h>
+#endif
+
+#include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-int num_texture = -1; // Counter to keep track of the last loaded texture
+// STB Image loader implementation
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 
-#define MAX_VERTICES 2000 // Max number of vertices (for each object)
-#define MAX_POLYGONS 2000 // Max number of polygons (for each object)
+#define MAX_VERTICES 50000
+#define MAX_TEXCOORDS 50000
+#define MAX_NORMALS 50000
+#define MAX_FACES 50000
+#define LINE_SIZE 256
 
-// Our vertex type
+// Structure for 3D vertices
 typedef struct {
   float x, y, z;
-} vertex_type;
+} Vertex;
 
-// The polygon (triangle), 3 numbers that aim 3 vertices
-typedef struct {
-  int a, b, c;
-} polygon_type;
-
-// The mapcoord type, 2 texture coordinates for each vertex
+// Structure for texture coordinates
 typedef struct {
   float u, v;
-} mapcoord_type;
+} TexCoord;
 
-// The object type
+// Structure for normals
 typedef struct {
-  vertex_type vertex[MAX_VERTICES];
-  polygon_type polygon[MAX_POLYGONS];
-  mapcoord_type mapcoord[MAX_VERTICES];
-  int id_texture;
-} obj_type, *obj_type_ptr;
+  float x, y, z;
+} Normal;
 
-// The width and height of your window, change them as you like
-int screen_width = 640;
-int screen_height = 480;
-
-// Absolute rotation values (0-359 degrees) and rotation increments for each
-// frame
-double rotation_x = 0, rotation_x_increment = 0.1;
-double rotation_y = 0, rotation_y_increment = 0.05;
-double rotation_z = 0, rotation_z_increment = 0.03;
-
-// Flag for rendering as lines or filled polygons
-int filling = 1; // 0=OFF 1=ON
-
-// And, finally our first object!
-obj_type cube = {
-    {
-        -10, -10, 10,  // vertex v0
-        10,  -10, 10,  // vertex v1
-        10,  -10, -10, // vertex v2
-        -10, -10, -10, // vertex v3
-        -10, 10,  10,  // vertex v4
-        10,  10,  10,  // vertex v5
-        10,  10,  -10, // vertex v6
-        -10, 10,  -10  // vertex v7
-    },
-    {
-        0, 1, 4, // polygon v0,v1,v4
-        1, 5, 4, // polygon v1,v5,v4
-        1, 2, 5, // polygon v1,v2,v5
-        2, 6, 5, // polygon v2,v6,v5
-        2, 3, 6, // polygon v2,v3,v6
-        3, 7, 6, // polygon v3,v7,v6
-        3, 0, 7, // polygon v3,v0,v7
-        0, 4, 7, // polygon v0,v4,v7
-        4, 5, 7, // polygon v4,v5,v7
-        5, 6, 7, // polygon v5,v6,v7
-        3, 2, 0, // polygon v3,v2,v0
-        2, 1, 0  // polygon v2,v1,v0
-    },
-    {
-        0.0, 0.0, // mapping coordinates for vertex v0
-        1.0, 0.0, // mapping coordinates for vertex v1
-        1.0, 0.0, // mapping coordinates for vertex v2
-        0.0, 0.0, // mapping coordinates for vertex v3
-        0.0, 1.0, // mapping coordinates for vertex v4
-        1.0, 1.0, // mapping coordinates for vertex v5
-        1.0, 1.0, // mapping coordinates for vertex v6
-        0.0, 1.0  // mapping coordinates for vertex v7
-    },
-    0,
-};
-
-/**********************************************************
- *
- * FUNCTION LoadBMP(char *)
- *
- * This function loads a BMP file and returns the OpenGL reference ID to use
- * that texture
- *
- *********************************************************/
-
-// BMP file header structure
+// Structure for face indices (supports triangles and quads)
 typedef struct {
-  unsigned short type; // Magic identifier
-  unsigned int size;   // File size in bytes
-  unsigned short reserved1, reserved2;
-  unsigned int offset; // Offset to image data, bytes
-} BMPFILEHEADER;
+  int numVertices; // 3 for triangle, 4 for quad
+  int vertexIndices[4];
+  int texCoordIndices[4];
+  int normalIndices[4];
+  bool hasTexCoords;
+  bool hasNormals;
+} Face;
 
-// BMP image header structure
-typedef struct {
-  unsigned int size;            // Header size in bytes
-  int width, height;            // Width and height of image
-  unsigned short planes;        // Number of color planes
-  unsigned short bits;          // Bits per pixel
-  unsigned int compression;     // Compression type
-  unsigned int imagesize;       // Image size in bytes
-  int xresolution, yresolution; // Pixels per meter
-  unsigned int ncolors;         // Number of colors
-  unsigned int importantcolors; // Important colors
-} BMPINFOHEADER;
+// Model data
+Vertex vertices[MAX_VERTICES];
+TexCoord texCoords[MAX_TEXCOORDS];
+Normal normals[MAX_NORMALS];
+Face faces[MAX_FACES];
 
-int LoadBMP(const char *filename) {
-  FILE *file;
-  unsigned char *data;
-  BMPFILEHEADER fileHeader;
-  BMPINFOHEADER infoHeader;
-  unsigned char temp;
-  int i;
+int numVertices = 0;
+int numTexCoords = 0;
+int numNormals = 0;
+int numFaces = 0;
 
-  num_texture++; // The counter of the current texture is increased
+// Texture variables
+GLuint textureID = 0;
+bool hasTexture = false;
 
-  // Open the file
-  file = fopen(filename, "rb");
-  if (file == NULL) {
-    printf("Error: File %s not found\n", filename);
-    return -1;
+// Camera and display variables
+float rotateX = 0.0f, rotateY = 0.0f;
+float translateZ = -5.0f;
+int prevX = 0, prevY = 0;
+bool mouseLeftDown = false;
+bool wireframeMode = false;
+bool textureEnabled = true;
+
+// Function to calculate face normal for lighting
+void calculateFaceNormal(int faceIndex, float *normal) {
+  Face *face = &faces[faceIndex];
+
+  // Get three vertices of the face
+  Vertex *v1 = &vertices[face->vertexIndices[0] - 1];
+  Vertex *v2 = &vertices[face->vertexIndices[1] - 1];
+  Vertex *v3 = &vertices[face->vertexIndices[2] - 1];
+
+  // Calculate two edges
+  float edge1[3] = {v2->x - v1->x, v2->y - v1->y, v2->z - v1->z};
+  float edge2[3] = {v3->x - v1->x, v3->y - v1->y, v3->z - v1->z};
+
+  // Cross product
+  normal[0] = edge1[1] * edge2[2] - edge1[2] * edge2[1];
+  normal[1] = edge1[2] * edge2[0] - edge1[0] * edge2[2];
+  normal[2] = edge1[0] * edge2[1] - edge1[1] * edge2[0];
+
+  // Normalize
+  float length = sqrt(normal[0] * normal[0] + normal[1] * normal[1] +
+                      normal[2] * normal[2]);
+  if (length > 0) {
+    normal[0] /= length;
+    normal[1] /= length;
+    normal[2] /= length;
+  }
+}
+
+// Function to load OBJ file
+bool loadOBJ(const char *filename) {
+  FILE *file = fopen(filename, "r");
+  if (!file) {
+    printf("Error: Cannot open file %s\n", filename);
+    return false;
   }
 
-  // Read the file header
-  fread(&fileHeader.type, 2, 1, file);
-  fread(&fileHeader.size, 4, 1, file);
-  fread(&fileHeader.reserved1, 2, 1, file);
-  fread(&fileHeader.reserved2, 2, 1, file);
-  fread(&fileHeader.offset, 4, 1, file);
+  char line[LINE_SIZE];
+  char prefix[10];
 
-  // Read the info header
-  fread(&infoHeader, sizeof(BMPINFOHEADER), 1, file);
+  printf("Loading OBJ file: %s\n", filename);
 
-  // Check if the file is actually a BMP
-  if (fileHeader.type != 0x4D42) { // 'BM' in little endian
-    fclose(file);
-    printf("Error: %s is not a bitmap file\n", filename);
-    return -1;
-  }
+  while (fgets(line, LINE_SIZE, file)) {
+    if (sscanf(line, "%s", prefix) == 1) {
+      // Process vertex
+      if (strcmp(prefix, "v") == 0) {
+        if (numVertices >= MAX_VERTICES) {
+          printf("Warning: Maximum vertices reached\n");
+          continue;
+        }
 
-  // Move file pointer to the beginning of bitmap data
-  fseek(file, fileHeader.offset, SEEK_SET);
+        sscanf(line, "v %f %f %f", &vertices[numVertices].x,
+               &vertices[numVertices].y, &vertices[numVertices].z);
+        numVertices++;
+      }
+      // Process texture coordinate
+      else if (strcmp(prefix, "vt") == 0) {
+        if (numTexCoords >= MAX_TEXCOORDS) {
+          printf("Warning: Maximum texture coordinates reached\n");
+          continue;
+        }
 
-  // Allocate memory for the image data
-  data = (unsigned char *)malloc(infoHeader.width * infoHeader.height * 4);
-  if (data == NULL) {
-    fclose(file);
-    printf("Error: Memory allocation failed\n");
-    return -1;
-  }
+        sscanf(line, "vt %f %f", &texCoords[numTexCoords].u,
+               &texCoords[numTexCoords].v);
+        numTexCoords++;
+      }
+      // Process normal
+      else if (strcmp(prefix, "vn") == 0) {
+        if (numNormals >= MAX_NORMALS) {
+          printf("Warning: Maximum normals reached\n");
+          continue;
+        }
 
-  // Read the image data
-  if (infoHeader.bits == 24) {
-    // Read the RGB values into the data buffer
-    unsigned char *ptr = data;
-    unsigned char rgb[3];
+        sscanf(line, "vn %f %f %f", &normals[numNormals].x,
+               &normals[numNormals].y, &normals[numNormals].z);
+        numNormals++;
+      }
+      // Process face (supports different formats)
+      else if (strcmp(prefix, "f") == 0) {
+        if (numFaces >= MAX_FACES) {
+          printf("Warning: Maximum faces reached\n");
+          continue;
+        }
 
-    for (i = 0; i < infoHeader.width * infoHeader.height; i++) {
-      // Read RGB values (BMP stores BGR)
-      fread(rgb, 3, 1, file);
+        Face *face = &faces[numFaces];
+        memset(face, 0, sizeof(Face));
 
-      // Store as RGBA (with Alpha = 255)
-      *ptr++ = rgb[2]; // Red (was Blue)
-      *ptr++ = rgb[1]; // Green
-      *ptr++ = rgb[0]; // Blue (was Red)
-      *ptr++ = 255;    // Alpha
+        // Count spaces to determine number of vertices (3 for triangle, 4 for
+        // quad)
+        int spaces = 0;
+        for (int i = 0; line[i] != '\0'; i++) {
+          if (line[i] == ' ')
+            spaces++;
+        }
+        face->numVertices = spaces; // spaces = vertices in face definition
+
+        // Try to parse the face definition
+        // Check for the format: v/vt/vn
+        if (strstr(line, "//") != NULL) {
+          // Format: v//vn
+          face->hasTexCoords = false;
+          face->hasNormals = true;
+
+          if (face->numVertices == 3) {
+            sscanf(line, "f %d//%d %d//%d %d//%d", &face->vertexIndices[0],
+                   &face->normalIndices[0], &face->vertexIndices[1],
+                   &face->normalIndices[1], &face->vertexIndices[2],
+                   &face->normalIndices[2]);
+          } else if (face->numVertices == 4) {
+            sscanf(line, "f %d//%d %d//%d %d//%d %d//%d",
+                   &face->vertexIndices[0], &face->normalIndices[0],
+                   &face->vertexIndices[1], &face->normalIndices[1],
+                   &face->vertexIndices[2], &face->normalIndices[2],
+                   &face->vertexIndices[3], &face->normalIndices[3]);
+          }
+        } else if (strchr(line, '/') != NULL) {
+          // Count slashes to determine format
+          int slashCount = 0;
+          for (int i = 0; line[i] != '\0'; i++) {
+            if (line[i] == '/')
+              slashCount++;
+          }
+
+          // Format: v/vt/vn
+          if (slashCount / face->numVertices == 2) {
+            face->hasTexCoords = true;
+            face->hasNormals = true;
+
+            if (face->numVertices == 3) {
+              sscanf(line, "f %d/%d/%d %d/%d/%d %d/%d/%d",
+                     &face->vertexIndices[0], &face->texCoordIndices[0],
+                     &face->normalIndices[0], &face->vertexIndices[1],
+                     &face->texCoordIndices[1], &face->normalIndices[1],
+                     &face->vertexIndices[2], &face->texCoordIndices[2],
+                     &face->normalIndices[2]);
+            } else if (face->numVertices == 4) {
+              sscanf(line, "f %d/%d/%d %d/%d/%d %d/%d/%d %d/%d/%d",
+                     &face->vertexIndices[0], &face->texCoordIndices[0],
+                     &face->normalIndices[0], &face->vertexIndices[1],
+                     &face->texCoordIndices[1], &face->normalIndices[1],
+                     &face->vertexIndices[2], &face->texCoordIndices[2],
+                     &face->normalIndices[2], &face->vertexIndices[3],
+                     &face->texCoordIndices[3], &face->normalIndices[3]);
+            }
+          }
+          // Format: v/vt
+          else if (slashCount / face->numVertices == 1) {
+            face->hasTexCoords = true;
+            face->hasNormals = false;
+
+            if (face->numVertices == 3) {
+              sscanf(line, "f %d/%d %d/%d %d/%d", &face->vertexIndices[0],
+                     &face->texCoordIndices[0], &face->vertexIndices[1],
+                     &face->texCoordIndices[1], &face->vertexIndices[2],
+                     &face->texCoordIndices[2]);
+            } else if (face->numVertices == 4) {
+              sscanf(line, "f %d/%d %d/%d %d/%d %d/%d", &face->vertexIndices[0],
+                     &face->texCoordIndices[0], &face->vertexIndices[1],
+                     &face->texCoordIndices[1], &face->vertexIndices[2],
+                     &face->texCoordIndices[2], &face->vertexIndices[3],
+                     &face->texCoordIndices[3]);
+            }
+          }
+        }
+        // Format: v
+        else {
+          face->hasTexCoords = false;
+          face->hasNormals = false;
+
+          if (face->numVertices == 3) {
+            sscanf(line, "f %d %d %d", &face->vertexIndices[0],
+                   &face->vertexIndices[1], &face->vertexIndices[2]);
+          } else if (face->numVertices == 4) {
+            sscanf(line, "f %d %d %d %d", &face->vertexIndices[0],
+                   &face->vertexIndices[1], &face->vertexIndices[2],
+                   &face->vertexIndices[3]);
+          }
+        }
+
+        numFaces++;
+      }
+      // Process smoothing group (currently just acknowledged, not fully
+      // implemented)
+      else if (strcmp(prefix, "s") == 0) {
+        int smoothingGroup;
+        sscanf(line, "s %d", &smoothingGroup);
+        // Just logging the smoothing group for now
+        // printf("Smoothing group: %d\n", smoothingGroup);
+      }
     }
-  } else {
-    free(data);
-    fclose(file);
-    printf("Error: Only 24-bit BMP files are supported\n");
-    return -1;
   }
 
   fclose(file);
 
-  // Bind the texture
-  glBindTexture(GL_TEXTURE_2D, num_texture);
+  printf("OBJ file loaded:\n");
+  printf("  Vertices: %d\n", numVertices);
+  printf("  Texture Coords: %d\n", numTexCoords);
+  printf("  Normals: %d\n", numNormals);
+  printf("  Faces: %d\n", numFaces);
 
-  // Set texture parameters
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                  GL_LINEAR_MIPMAP_NEAREST);
-  glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-
-  // Create the texture
-  glTexImage2D(GL_TEXTURE_2D, 0, 4, infoHeader.width, infoHeader.height, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-  // Create mipmaps
-  gluBuild2DMipmaps(GL_TEXTURE_2D, 4, infoHeader.width, infoHeader.height,
-                    GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-  // Free the memory
-  free(data);
-
-  return num_texture;
+  return true;
 }
 
-void displayAlert(const char *message) {
-  printf("ERROR: %s\n", message);
-  exit(1);
+bool loadTexture(const char *filename) {
+  if (!filename) {
+    printf("Error: Texture filename is NULL\n");
+    return false;
+  }
+  
+  printf("Attempting to load texture from: %s\n", filename);
+
+  stbi_set_flip_vertically_on_load(true);
+  
+  int width, height, channels;
+  unsigned char *data = stbi_load(filename, &width, &height, &channels, 0);
+  
+  if (!data) {
+    printf("Error: Cannot load texture file %s\n", filename);
+    printf("STB Image error: %s\n", stbi_failure_reason());
+    return false;
+  }
+  
+  printf("Texture loaded successfully: %s (%dx%d, %d channels)\n", filename, width, height, channels);
+  
+  glGenTextures(1, &textureID);
+  glBindTexture(GL_TEXTURE_2D, textureID);
+  
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  
+  GLenum format;
+  if (channels == 1)
+    format = GL_LUMINANCE;
+  else if (channels == 3)
+    format = GL_RGB;
+  else if (channels == 4)
+    format = GL_RGBA;
+  else {
+    printf("Warning: Unsupported texture format (channels: %d)\n", channels);
+    stbi_image_free(data);
+    return false;
+  }
+  
+  glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  
+  stbi_image_free(data);
+  hasTexture = true;
+  
+  return true;
 }
 
-void init(void) {
-  glClearColor(0.0, 0.0, 0.2,
-               0.0);       // This clear the background color to dark blue
-  glShadeModel(GL_SMOOTH); // Type of shading for the polygons
+void normalizeModel() {
+  if (numVertices == 0)
+    return;
 
-  // Viewport transformation
-  glViewport(0, 0, screen_width, screen_height);
+  float minX = vertices[0].x, maxX = vertices[0].x;
+  float minY = vertices[0].y, maxY = vertices[0].y;
+  float minZ = vertices[0].z, maxZ = vertices[0].z;
 
-  // Projection transformation
-  glMatrixMode(GL_PROJECTION); // Specifies which matrix stack is the target for
-                               // matrix operations
-  glLoadIdentity(); // We initialize the projection matrix as identity
-  gluPerspective(45.0f, (GLfloat)screen_width / (GLfloat)screen_height, 1.0f,
-                 1000.0f); // We define the "viewing volume"
+  for (int i = 1; i < numVertices; i++) {
+    if (vertices[i].x < minX)
+      minX = vertices[i].x;
+    if (vertices[i].x > maxX)
+      maxX = vertices[i].x;
+    if (vertices[i].y < minY)
+      minY = vertices[i].y;
+    if (vertices[i].y > maxY)
+      maxY = vertices[i].y;
+    if (vertices[i].z < minZ)
+      minZ = vertices[i].z;
+    if (vertices[i].z > maxZ)
+      maxZ = vertices[i].z;
+  }
 
-  glEnable(GL_DEPTH_TEST); // We enable the depth test (also called z buffer)
-  glPolygonMode(GL_FRONT_AND_BACK,
-                GL_FILL); // Polygon rasterization mode (polygon filled)
+  float centerX = (minX + maxX) / 2;
+  float centerY = (minY + maxY) / 2;
+  float centerZ = (minZ + maxZ) / 2;
 
-  glEnable(GL_TEXTURE_2D); // This Enable the Texture mapping
+  float sizeX = maxX - minX;
+  float sizeY = maxY - minY;
+  float sizeZ = maxZ - minZ;
 
-  cube.id_texture = LoadBMP("texture1.bmp"); // The Function LoadBitmap() return
-                                             // the current texture ID
+  float maxSize = sizeX;
+  if (sizeY > maxSize)
+    maxSize = sizeY;
+  if (sizeZ > maxSize)
+    maxSize = sizeZ;
 
-  // If the last function returns -1 it means the file was not found so we exit
-  // from the program
-  if (cube.id_texture == -1) {
-    displayAlert("Image file: texture1.bmp not found");
+  float scale = 2.0f / maxSize;
+
+  for (int i = 0; i < numVertices; i++) {
+    vertices[i].x = (vertices[i].x - centerX) * scale;
+    vertices[i].y = (vertices[i].y - centerY) * scale;
+    vertices[i].z = (vertices[i].z - centerZ) * scale;
   }
 }
 
-void resize(int width, int height) {
-  screen_width = width;   // We obtain the new screen width values and store it
-  screen_height = height; // Height value
+void init() {
+  glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
+  glEnable(GL_DEPTH_TEST);
 
-  glClear(GL_COLOR_BUFFER_BIT |
-          GL_DEPTH_BUFFER_BIT); // We clear both the color and the depth buffer
-                                // so to draw the next frame
-  glViewport(0, 0, screen_width, screen_height); // Viewport transformation
+  glEnable(GL_LIGHTING);
+  glEnable(GL_LIGHT0);
 
-  glMatrixMode(GL_PROJECTION); // Projection transformation
-  glLoadIdentity(); // We initialize the projection matrix as identity
-  gluPerspective(45.0f, (GLfloat)screen_width / (GLfloat)screen_height, 1.0f,
-                 1000.0f);
+  float ambient[] = {0.2f, 0.2f, 0.2f, 1.0f};
+  float diffuse[] = {0.8f, 0.8f, 0.8f, 1.0f};
+  float specular[] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float position[] = {1.0f, 1.0f, 1.0f, 0.0f};
 
-  glutPostRedisplay(); // This command redraw the scene (it calls the same
-                       // routine of glutDisplayFunc)
+  glLightfv(GL_LIGHT0, GL_AMBIENT, ambient);
+  glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
+  glLightfv(GL_LIGHT0, GL_SPECULAR, specular);
+  glLightfv(GL_LIGHT0, GL_POSITION, position);
+
+  float matAmbient[] = {0.7f, 0.7f, 0.7f, 1.0f};
+  float matDiffuse[] = {0.8f, 0.8f, 0.8f, 1.0f};
+  float matSpecular[] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float matShininess = 50.0f;
+
+  glMaterialfv(GL_FRONT, GL_AMBIENT, matAmbient);
+  glMaterialfv(GL_FRONT, GL_DIFFUSE, matDiffuse);
+  glMaterialfv(GL_FRONT, GL_SPECULAR, matSpecular);
+  glMaterialf(GL_FRONT, GL_SHININESS, matShininess);
+
+  glEnable(GL_TEXTURE_2D);
+
+  normalizeModel();
+}
+
+void renderModel() {
+  if (hasTexture && textureEnabled) {
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+  } else {
+    glDisable(GL_TEXTURE_2D);
+  }
+
+  for (int i = 0; i < numFaces; i++) {
+    Face *face = &faces[i];
+
+    if (wireframeMode) {
+      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    } else {
+      glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
+
+    if (face->numVertices == 3) {
+      glBegin(GL_TRIANGLES);
+    } else if (face->numVertices == 4) {
+      glBegin(GL_QUADS);
+    } else {
+      continue;
+    }
+
+    if (!face->hasNormals) {
+      float normal[3];
+      calculateFaceNormal(i, normal);
+      glNormal3fv(normal);
+    }
+
+    for (int j = 0; j < face->numVertices; j++) {
+      if (face->hasNormals) {
+        int normalIndex = face->normalIndices[j] - 1;
+        if (normalIndex >= 0 && normalIndex < numNormals) {
+          glNormal3f(normals[normalIndex].x, normals[normalIndex].y,
+                     normals[normalIndex].z);
+        }
+      }
+
+      if (face->hasTexCoords && hasTexture && textureEnabled) {
+        int texCoordIndex = face->texCoordIndices[j] - 1;
+        if (texCoordIndex >= 0 && texCoordIndex < numTexCoords) {
+          glTexCoord2f(texCoords[texCoordIndex].u, texCoords[texCoordIndex].v);
+        }
+      }
+
+      int vertexIndex = face->vertexIndices[j] - 1;
+      if (vertexIndex >= 0 && vertexIndex < numVertices) {
+        glVertex3f(vertices[vertexIndex].x, vertices[vertexIndex].y,
+                   vertices[vertexIndex].z);
+      }
+    }
+
+    glEnd();
+  }
+}
+
+void display() {
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+
+  glTranslatef(0.0f, 0.0f, translateZ);
+  glRotatef(rotateX, 1.0f, 0.0f, 0.0f);
+  glRotatef(rotateY, 0.0f, 1.0f, 0.0f);
+
+  renderModel();
+
+  glutSwapBuffers();
+}
+
+void reshape(int width, int height) {
+  glViewport(0, 0, width, height);
+
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+
+  float aspectRatio = (float)width / (float)height;
+  gluPerspective(45.0f, aspectRatio, 0.1f, 100.0f);
+
+  glMatrixMode(GL_MODELVIEW);
+}
+
+void mouse(int button, int state, int x, int y) {
+  prevX = x;
+  prevY = y;
+
+  if (button == GLUT_LEFT_BUTTON) {
+    mouseLeftDown = (state == GLUT_DOWN);
+  }
+}
+
+void motion(int x, int y) {
+  if (mouseLeftDown) {
+    rotateY += (x - prevX) * 0.5f;
+    rotateX += (y - prevY) * 0.5f;
+
+    prevX = x;
+    prevY = y;
+
+    glutPostRedisplay();
+  }
 }
 
 void keyboard(unsigned char key, int x, int y) {
   switch (key) {
-  case ' ':
-    rotation_x_increment = 0;
-    rotation_y_increment = 0;
-    rotation_z_increment = 0;
-    break;
-  case 'r':
-  case 'R':
-    if (filling == 0) {
-      glPolygonMode(GL_FRONT_AND_BACK,
-                    GL_FILL); // Polygon rasterization mode (polygon filled)
-      filling = 1;
-    } else {
-      glPolygonMode(GL_FRONT_AND_BACK,
-                    GL_LINE); // Polygon rasterization mode (polygon outlined)
-      filling = 0;
-    }
-    break;
-  case 'q':
-  case 'Q':
   case 27: // ESC key
     exit(0);
     break;
+  case 'w':
+  case 'W':
+    wireframeMode = !wireframeMode;
+    glutPostRedisplay();
+    break;
+  case 't':
+  case 'T':
+    textureEnabled = !textureEnabled;
+    glutPostRedisplay();
+    break;
+  case '+':
+  case '=':
+    translateZ += 0.5f;
+    glutPostRedisplay();
+    break;
+  case '-':
+  case '_':
+    translateZ -= 0.5f;
+    glutPostRedisplay();
+    break;
+  case 'r':
+  case 'R':
+    rotateX = 0.0f;
+    rotateY = 0.0f;
+    translateZ = -5.0f;
+    glutPostRedisplay();
+    break;
   }
 }
 
-void keyboard_s(int key, int x, int y) {
-  switch (key) {
-  case GLUT_KEY_UP:
-    rotation_x_increment = rotation_x_increment + 0.005;
-    break;
-  case GLUT_KEY_DOWN:
-    rotation_x_increment = rotation_x_increment - 0.005;
-    break;
-  case GLUT_KEY_LEFT:
-    rotation_y_increment = rotation_y_increment + 0.005;
-    break;
-  case GLUT_KEY_RIGHT:
-    rotation_y_increment = rotation_y_increment - 0.005;
-    break;
-  }
-}
-
-void display(void) {
-  int l_index;
-
-  glClear(GL_COLOR_BUFFER_BIT |
-          GL_DEPTH_BUFFER_BIT); // This clear the background color to dark blue
-  glMatrixMode(GL_MODELVIEW);   // Modeling transformation
-  glLoadIdentity();             // Initialize the model matrix as identity
-
-  glTranslatef(0.0, 0.0,
-               -50); // We move the object 50 points forward (the model matrix
-                     // is multiplied by the translation matrix)
-
-  rotation_x = rotation_x + rotation_x_increment;
-  rotation_y = rotation_y + rotation_y_increment;
-  rotation_z = rotation_z + rotation_z_increment;
-
-  if (rotation_x > 359)
-    rotation_x = 0;
-  if (rotation_y > 359)
-    rotation_y = 0;
-  if (rotation_z > 359)
-    rotation_z = 0;
-
-  glRotatef(rotation_x, 1.0, 0.0,
-            0.0); // Rotations of the object (the model matrix is multiplied by
-                  // the rotation matrices)
-  glRotatef(rotation_y, 0.0, 1.0, 0.0);
-  glRotatef(rotation_z, 0.0, 0.0, 1.0);
-
-  glBindTexture(GL_TEXTURE_2D, cube.id_texture); // We set the active texture
-
-  glBegin(GL_TRIANGLES); // GlBegin and glEnd delimit the vertices that define a
-                         // primitive (in our case triangles)
-  for (l_index = 0; l_index < 12; l_index++) {
-    //----------------- FIRST VERTEX -----------------
-    // Texture coordinates of the first vertex
-    glTexCoord2f(cube.mapcoord[cube.polygon[l_index].a].u,
-                 cube.mapcoord[cube.polygon[l_index].a].v);
-    // Coordinates of the first vertex
-    glVertex3f(cube.vertex[cube.polygon[l_index].a].x,
-               cube.vertex[cube.polygon[l_index].a].y,
-               cube.vertex[cube.polygon[l_index].a].z); // Vertex definition
-
-    //----------------- SECOND VERTEX -----------------
-    // Texture coordinates of the second vertex
-    glTexCoord2f(cube.mapcoord[cube.polygon[l_index].b].u,
-                 cube.mapcoord[cube.polygon[l_index].b].v);
-    // Coordinates of the second vertex
-    glVertex3f(cube.vertex[cube.polygon[l_index].b].x,
-               cube.vertex[cube.polygon[l_index].b].y,
-               cube.vertex[cube.polygon[l_index].b].z);
-
-    //----------------- THIRD VERTEX -----------------
-    // Texture coordinates of the third vertex
-    glTexCoord2f(cube.mapcoord[cube.polygon[l_index].c].u,
-                 cube.mapcoord[cube.polygon[l_index].c].v);
-    // Coordinates of the Third vertex
-    glVertex3f(cube.vertex[cube.polygon[l_index].c].x,
-               cube.vertex[cube.polygon[l_index].c].y,
-               cube.vertex[cube.polygon[l_index].c].z);
-  }
-  glEnd();
-
-  glFlush();         // This force the execution of OpenGL commands
-  glutSwapBuffers(); // In double buffered mode we invert the positions of the
-                     // visible buffer and the writing buffer
+void displayUsage(const char *programName) {
+  printf("Usage: %s <OBJFile> [TextureFile]\n", programName);
+  printf("Controls:\n");
+  printf("  Left mouse button drag - Rotate model\n");
+  printf("  W - Toggle wireframe mode\n");
+  printf("  T - Toggle texture display\n");
+  printf("  + - Zoom in\n");
+  printf("  - - Zoom out\n");
+  printf("  R - Reset view\n");
+  printf("  ESC - Exit\n");
 }
 
 int main(int argc, char **argv) {
-  // We use the GLUT utility to initialize the window, to handle the input and
-  // to interact with the windows system
+  displayUsage(argv[0]);
+
+  if (!loadOBJ("/Users/barsboldbayarerdene/Code/Unidays/fundamentals_of_computer_graphic/lab11/Character.obj")) {
+    return 1;
+  }
+
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
-  glutInitWindowSize(screen_width, screen_height);
-  glutInitWindowPosition(0, 0);
-  glutCreateWindow("Texture Mapping");
+  glutInitWindowSize(800, 600);
+  glutCreateWindow("OBJ Viewer with Texture Support");
+
+  const char* texturePath = "/Users/barsboldbayarerdene/Code/Unidays/fundamentals_of_computer_graphic/lab11/Texture.jpg";
+  printf("Attempting to load texture from: %s\n", texturePath);
+  if (!loadTexture(texturePath)) {
+    printf("Warning: Failed to load texture. Continuing without texture.\n");
+    hasTexture = false;
+  }
+
   glutDisplayFunc(display);
-  glutIdleFunc(display);
-  glutReshapeFunc(resize);
+  glutReshapeFunc(reshape);
+  glutMouseFunc(mouse);
+  glutMotionFunc(motion);
   glutKeyboardFunc(keyboard);
-  glutSpecialFunc(keyboard_s);
+
   init();
+
   glutMainLoop();
 
   return 0;
